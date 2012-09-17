@@ -1,0 +1,66 @@
+#!/usr/bin/env python
+
+import sys, re
+from optparse import OptionParser
+from subprocess import PIPE,Popen
+
+def split_into(lst, n):
+	"""Attempt to split the list into evenly sized sub lists"""
+	if n == 0: #No split required
+		return [lst]
+	return [[x for x in lst[i:i+n]] for i in range(0, len(lst), n)]
+
+def output(string, who, f):
+	for line in [x for x in string.strip().split("\n") if x]:
+		if not opts.quiet:
+			f.write("%s: " % who)
+		f.write(line+"\n")
+
+if __name__ == "__main__":
+	parser = OptionParser("usage: %prog [options] <%s command template> [subst1 [subst2 ...]]")
+	parser.add_option("-P" , "--maxprocs" , type="int"          , default=0     , help="Max processes to execute at a time (0=max parallel). [default: %default]")
+	parser.add_option("-I" , "--replstr"  , type="str"          , default="%s"  , help="String to replace in the template [default: %default]")
+	parser.add_option("-q" , "--quiet"    , action="store_true" , default=False , help="Be quiet [default: %default]")
+	parser.add_option("-v" , "--verbose"  , action="store_true" , default=False , help="Be more verbose [default: %default]")
+	(opts, args) = parser.parse_args()
+
+	if len(args) > 0 and not sys.stdin.isatty():
+		args += sys.stdin.read().split("\n")
+	if len(args) < 2: 
+		sys.exit(parser.print_help())
+
+	groups = []
+	#Allow for more fine grained control over grouping
+	for group in re.split('[\(\)\[\]]','+,+'.join(args[1:])):
+		group = [x for x in group.split('+,+') if x]
+		if not len(group):
+			continue
+		for splt in split_into(group, opts.maxprocs): #Split again if longer than options
+			groups.append(splt)
+
+	rcs = []
+	for group in groups:
+		jobs = []
+		for who in group:
+			cmd = args[0].replace(opts.replstr, who)
+			jobs.append({
+				'proc': Popen([cmd], shell=True, universal_newlines=True, stderr=PIPE, stdout=PIPE),
+				'cmd': cmd,
+				'who': who,
+			})
+
+		for job in jobs:
+			try:
+				who, cmd, proc = job['who'], job['cmd'], job['proc']
+				if opts.verbose:
+					output("Executing: '%s'" % cmd, who, sys.stderr)
+				comm, rc = proc.communicate(), proc.returncode
+				if rc:
+					output(comm[1], who+": RC%s" % rc, sys.stderr)
+				output(comm[0], who, sys.stdout)
+				rcs.append(rc)
+			except OSError:
+				pass
+
+	if max(rcs): #Exit poorly if our maxprocs did
+		sys.exit(max(rcs))
